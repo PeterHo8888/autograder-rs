@@ -24,4 +24,5 @@ fn main() {
     }
 
     autograder::download_submissions(133, 199001);
+    autograder::compile_submissions(133, 199001);
 }

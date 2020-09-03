@@ -1,7 +1,7 @@
 use curl::easy::{Easy, List};
 use serde::{Deserialize, de};
 use serde_json::{Result, Value};
-use std::io::{stdout, Write};
+use std::io::{stdout, Write, ErrorKind};
 
 #[derive(Deserialize, Debug)]
 pub struct Course {
@@ -51,6 +51,44 @@ pub fn init(token: &str) {
 }
 
 /*
+ * Compile submissions for a given course and assignment
+ */
+pub fn compile_submissions(course_id: i32, assignment_id: i32) {
+    let dir = format!("submissions/{}/{}/", course_id, assignment_id);
+
+    let paths = std::fs::read_dir(&dir).unwrap_or_else(|error| {
+        if error.kind() == ErrorKind::NotFound {
+            println!("**************************************");
+            println!("* Auto-downloading submissions...    *");
+            println!("* Do NOT rely on this behavior.      *");
+            println!("* Call download_submissions MANUALLY.*");
+            println!("**************************************");
+            download_submissions(course_id, assignment_id);
+            std::fs::read_dir(&dir).expect("Problem reading submissions dir")
+        } else {
+            panic!("Problem reading submissions dir: {:?}", error);
+        }
+    });
+
+    // Remove all previous execs
+    // Use .exe extension for Windows compatibility
+    let command = format!("rm {}*.exe", dir);
+    std::process::Command::new("sh").arg("-c").arg(&command).output().expect("Failed to remove exes");
+
+    for path in paths {
+        let filepath = path.unwrap().path();
+        let filename = filepath.to_str().unwrap();
+        let command = format!("g++ -o {}.exe {}", &filename[..filename.len()-3], &filename);
+        println!("command: {}", command);
+        let output = std::process::Command::new("sh")
+            .arg("-c")
+            .arg(&command)
+            .output()
+            .expect("Failed to execute process");
+    }
+}
+
+/*
  * Download submissions for a given course and assignment
  */
 pub fn download_submissions(course_id: i32, assignment_id: i32) {
@@ -69,7 +107,7 @@ pub fn download_submissions(course_id: i32, assignment_id: i32) {
         }
         let submission: Submission = serde_json::from_str(json).unwrap();
         println!("{:?}", submission);
-        download_url_to_id(assignment_id, submission.user_id, &submission.attachments[0].url);
+        download_url_to_id(course_id, assignment_id, submission.user_id, &submission.attachments[0].url);
     }
 }
 
@@ -111,10 +149,10 @@ fn raw_to_vec<T: de::DeserializeOwned>(buf: Vec<u8>) -> Vec<T> {
 /*
  * Download file at URL to "./assignments/{assignment_id}/{user_id}.cc"
  */
-fn download_url_to_id(assignment_id: i32, user_id: i32, url: &String) {
+fn download_url_to_id(course_id: i32, assignment_id: i32, user_id: i32, url: &String) {
     let buf = fetch_file(url);
-    let dir = format!("submissions/{}/", assignment_id);
-    let path = format!("submissions/{}/{}.cc", assignment_id, user_id);
+    let dir = format!("submissions/{}/{}", course_id, assignment_id);
+    let path = format!("submissions/{}/{}/{}.cc", course_id, assignment_id, user_id);
     std::fs::create_dir_all(&dir).unwrap();
     let mut file = std::fs::File::create(path).unwrap();
     file.write_all(&buf).unwrap();
