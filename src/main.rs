@@ -2,7 +2,8 @@
 mod autograder;
 fn main() {
     println!("Hello, world!");
-    let token = std::fs::read_to_string("token.txt").expect("Error reading token.txt");
+    let mut token = std::fs::read_to_string("token.txt").expect("Error reading token.txt");
+    token.pop();
     autograder::init(&token);
 
     let courses = autograder::list_courses();
@@ -25,4 +26,5 @@ fn main() {
 
     autograder::download_submissions(133, 199001);
     autograder::compile_submissions(133, 199001);
+    autograder::grade_submission(133, 199001, 30378, 169.0);
 }

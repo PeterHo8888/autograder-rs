@@ -1,7 +1,9 @@
-use curl::easy::{Easy, List};
 use serde::{Deserialize, de};
-use serde_json::{Result, Value};
-use std::io::{stdout, Write, ErrorKind};
+use serde_json::{Result, Value, json};
+use std::io::{stdout, Write, Read, ErrorKind};
+
+mod connection;
+use connection::*;
 
 #[derive(Deserialize, Debug)]
 pub struct Course {
@@ -37,7 +39,7 @@ pub struct Attachment {
     pub url: String,
 }
 
-const API: &str = "https://sit.instructure.com/api/v1";
+pub const API: &str = "https://sit.instructure.com/api/v1";
 static mut OAUTH: String = String::new();
 
 /*
@@ -47,6 +49,15 @@ static mut OAUTH: String = String::new();
 pub fn init(token: &str) {
     unsafe {
         OAUTH = format!("Authorization: Bearer {}", token);
+    }
+}
+
+/*
+ * Getter for OAUTH token
+ */
+pub fn get_token() -> &'static str {
+    unsafe {
+        &OAUTH
     }
 }
 
@@ -72,19 +83,31 @@ pub fn compile_submissions(course_id: i32, assignment_id: i32) {
 
     // Remove all previous execs
     // Use .exe extension for Windows compatibility
-    let command = format!("rm {}*.exe", dir);
-    std::process::Command::new("sh").arg("-c").arg(&command).output().expect("Failed to remove exes");
+    let command = format!("rm -rf {}/out/", dir);
+    std::process::Command::new("sh").arg("-c").arg(&command).output().unwrap();
+
+    let command = format!("mkdir -p {}/out/", dir);
+    std::process::Command::new("sh").arg("-c").arg(&command).output().unwrap();
 
     for path in paths {
-        let filepath = path.unwrap().path();
-        let filename = filepath.to_str().unwrap();
-        let command = format!("g++ -o {}.exe {}", &filename[..filename.len()-3], &filename);
+        let filepath = path.unwrap().path(); // FilePath
+        let ext = filepath.extension();
+        if ext == None || ext.unwrap() != "cc" {
+            continue;
+        }
+
+        let parent_dir = filepath.parent().unwrap().to_str().unwrap();
+        let filename = filepath.file_name().unwrap().to_str().unwrap();
+        let command = format!("g++ -Wall -o {}/out/{}.exe {}", &parent_dir, &filename[..filename.len()-3], filepath.to_str().unwrap());
         println!("command: {}", command);
         let output = std::process::Command::new("sh")
             .arg("-c")
             .arg(&command)
             .output()
             .expect("Failed to execute process");
+
+        println!("stdout: {}", String::from_utf8_lossy(&output.stdout));
+        println!("stderr: {}", String::from_utf8_lossy(&output.stderr));
     }
 }
 
@@ -107,15 +130,28 @@ pub fn download_submissions(course_id: i32, assignment_id: i32) {
         }
         let submission: Submission = serde_json::from_str(json).unwrap();
         println!("{:?}", submission);
-        download_url_to_id(course_id, assignment_id, submission.user_id, &submission.attachments[0].url);
+        download_url_to_ident(course_id, assignment_id, &submission.user_id, &submission.attachments[0].url);
     }
+}
+
+/*
+ * Grade a single submission
+ */
+pub fn grade_submission(course_id: i32, assignment_id: i32, user_id: i32, percent: f32) {
+    let path = format!("/courses/{}/assignments/{}/submissions/{}", course_id, assignment_id, user_id);
+    let data = json!({
+        "submission": {
+            "posted_grade": format!("{}%", percent),
+        },
+    });
+    put_json(&path, &data.to_string());
 }
 
 /*
  * Get student listing for a given course id
  */
 pub fn list_students(course_id: i32) -> Vec<Student> {
-    let path = format!("/courses/{}/users?enrollment_type=student&sort=sis_id&per_page=1000", course_id);
+    let path = format!("/courses/{}/users?enrollment_type=student&sort=sis_id&per_page=300", course_id);
     let buf = fetch_api(&path);
     raw_to_vec::<Student>(buf)
 }
@@ -124,7 +160,7 @@ pub fn list_students(course_id: i32) -> Vec<Student> {
  * Get assignment listing for a given course id
  */
 pub fn list_assignments(course_id: i32) -> Vec<Assignment> {
-    let path = format!("/courses/{}/assignments?per_page=1000", course_id);
+    let path = format!("/courses/{}/assignments?per_page=200", course_id);
     let buf = fetch_api(&path);
     raw_to_vec::<Assignment>(buf)
 }
@@ -149,60 +185,11 @@ fn raw_to_vec<T: de::DeserializeOwned>(buf: Vec<u8>) -> Vec<T> {
 /*
  * Download file at URL to "./assignments/{assignment_id}/{user_id}.cc"
  */
-fn download_url_to_id(course_id: i32, assignment_id: i32, user_id: i32, url: &String) {
+fn download_url_to_ident<T: std::fmt::Display>(course_id: i32, assignment_id: i32, ident: &T, url: &String) {
     let buf = fetch_file(url);
     let dir = format!("submissions/{}/{}", course_id, assignment_id);
-    let path = format!("submissions/{}/{}/{}.cc", course_id, assignment_id, user_id);
+    let path = format!("submissions/{}/{}/{}.cc", course_id, assignment_id, ident);
     std::fs::create_dir_all(&dir).unwrap();
     let mut file = std::fs::File::create(path).unwrap();
     file.write_all(&buf).unwrap();
-}
-
-/*
- * Retrieve file from URL
- */
-fn fetch_file(url: &str) -> Vec<u8> {
-    fetch(url, None)
-}
-
-/*
- * Helper function to retrieve raw JSON from Canvas LMS REST API
- */
-fn fetch_api(path: &str) -> Vec<u8> {
-    let mut list = List::new();
-    list.append("Content-Type: application/json").unwrap();
-    list.append("Charset: UTF-8").unwrap();
-    unsafe {
-        list.append(&OAUTH).unwrap();
-    }
-    // Set up URL
-    let url = format!("{}{}", API, path);
-    fetch(&url, Some(list))
-}
-
-/*
- * Retrieve data from given URL and optional headers
- */
-fn fetch(url: &str, list: Option<List>) -> Vec<u8> {
-    let mut buf = Vec::new();
-    let mut handle = Easy::new();
-
-    handle.url(url).unwrap();
-    handle.follow_location(true).unwrap(); // 3xx redirects
-
-    if let Some(header) = list {
-        handle.http_headers(header).unwrap();
-    }
-
-    {
-        // Callback
-        let mut transfer = handle.transfer();
-        transfer.write_function(|data| {
-            buf.extend_from_slice(data);
-            Ok(data.len())
-        }).unwrap();
-
-        transfer.perform().unwrap();
-    }
-    buf
 }
