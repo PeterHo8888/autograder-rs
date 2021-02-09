@@ -61,25 +61,28 @@ pub fn get_token() -> &'static str {
     }
 }
 
-/*
- * Compile submissions for a given course and assignment
- */
-pub fn compile_submissions(course_id: i32, assignment_id: i32) {
-    let dir = format!("submissions/{}/{}/", course_id, assignment_id);
+pub fn get_submission_dir(course_id: i32, assignment_id: i32) -> String {
+    format!("submissions/{}/{}/", course_id, assignment_id)
+}
 
+pub fn get_submission_files(dir: &str) -> std::fs::ReadDir {
     let paths = std::fs::read_dir(&dir).unwrap_or_else(|error| {
         if error.kind() == ErrorKind::NotFound {
-            println!("**************************************");
-            println!("* Auto-downloading submissions...    *");
-            println!("* Do NOT rely on this behavior.      *");
-            println!("* Call download_submissions MANUALLY.*");
-            println!("**************************************");
-            download_submissions(course_id, assignment_id);
             std::fs::read_dir(&dir).expect("Problem reading submissions dir")
         } else {
             panic!("Problem reading submissions dir: {:?}", error);
         }
     });
+
+    paths
+}
+
+/*
+ * Compile submissions for a given course and assignment
+ */
+pub fn compile_submissions(course_id: i32, assignment_id: i32) {
+    let dir = get_submission_dir(course_id, assignment_id);
+    let paths = get_submission_files(&dir);
 
     // Remove all previous execs
     // Use .exe extension for Windows compatibility
@@ -98,7 +101,7 @@ pub fn compile_submissions(course_id: i32, assignment_id: i32) {
 
         let parent_dir = filepath.parent().unwrap().to_str().unwrap();
         let filename = filepath.file_name().unwrap().to_str().unwrap();
-        let command = format!("g++ -Wall -o {}/out/{}.exe {}", &parent_dir, &filename[..filename.len()-3], filepath.to_str().unwrap());
+        let command = format!("g++ -Wall -Wextra -fsanitize=address -o {}/out/{}.exe {}", &parent_dir, &filename[..filename.len() - 3], filepath.to_str().unwrap());
         println!("command: {}", command);
         let output = std::process::Command::new("sh")
             .arg("-c")
@@ -169,7 +172,7 @@ pub fn list_assignments(course_id: i32) -> Vec<Assignment> {
  * Get course listing
  */
 pub fn list_courses() -> Vec<Course> {
-    let buf = fetch_api("/courses?enrollment_type=teacher");
+    let buf = fetch_api("/courses?enrollment_type=ta");
     raw_to_vec::<Course>(buf)
 }
 
